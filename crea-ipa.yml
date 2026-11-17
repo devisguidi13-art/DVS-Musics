@@ -1,0 +1,88 @@
+name: Crea DVS Music IPA (senza firma)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-iphone:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Scarica il progetto
+        uses: actions/checkout@v4
+
+      - name: Prepara Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.1'
+
+      - name: Versione degli strumenti
+        run: |
+          node --version
+          xcodebuild -version
+          pod --version
+
+      - name: Installa dipendenze
+        run: npm install --no-audit --no-fund
+
+      - name: Testa la coda, il casuale e la Radio
+        run: npm run test:queue
+
+      - name: Allinea dipendenze Expo
+        run: npx expo install --fix --npm
+
+      - name: Genera il progetto iOS
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Installa CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Compila per iPhone senza firma Apple
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_PATH=$(find ios -maxdepth 1 -type d -name '*.xcodeproj' -print -quit)
+          WORKSPACE_PATH=$(find ios -maxdepth 1 -type d -name '*.xcworkspace' -print -quit)
+          if [[ -z "$PROJECT_PATH" || -z "$WORKSPACE_PATH" ]]; then
+            echo 'Progetto iOS non generato correttamente'
+            exit 1
+          fi
+          SCHEME=$(basename "$PROJECT_PATH" .xcodeproj)
+          echo "Workspace=$WORKSPACE_PATH - Scheme=$SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/ios-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build
+
+      - name: Crea il file DVS_Music_unsigned.ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find ios-build/Build/Products/Release-iphoneos -maxdepth 1 -type d -name '*.app' -print -quit)
+          if [[ -z "$APP_PATH" ]]; then
+            echo 'Nessun bundle .app creato. Controlla i log del passaggio di compilazione.'
+            exit 1
+          fi
+          mkdir -p packaging/Payload
+          ditto "$APP_PATH" "packaging/Payload/$(basename "$APP_PATH")"
+          (cd packaging && zip -qry ../DVS_Music_unsigned.ipa Payload)
+          ls -lh DVS_Music_unsigned.ipa
+
+      - name: Permetti di scaricare l IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DVS_Music_IPA_non_firmato
+          path: DVS_Music_unsigned.ipa
+          retention-days: 14
+          if-no-files-found: error
